@@ -1,0 +1,243 @@
+%% Binary Data Generation
+
+function bit_data = data2binary( ndata, nbits )
+
+[nsample, ndim] = size(ndata);
+bit_data = zeros(nsample, nbits * ndim);
+for j = 1 : ndim
+    k = floor( (0.1*power(2,nbits-1) + ndata(:,j)) / 0.1 );
+    %데이터를 구간별로 나눔
+    ChosenIndex = (k>0 & k<power(2,nbits));
+    %각 구간에 (nbits)bit 이진수를 할당
+    binary = dec2bin( k(ChosenIndex) , nbits);      
+    bit_data(ChosenIndex,(j-1)*nbits + 1 : j*nbits) = binary -'0';
+end
+
+
+# Deep Belief Network Model
+
+function model= dbnFit(X, numhid, y, varargin)
+%fit a DBN to bianry data in X
+
+%INPUTS: 
+%X              ... data. should be binary, or in [0,1] interpreted as
+%               ... probabilities
+%numhid         ... list of numbers of hidden units
+%y              ... List of discrete labels
+
+%OUTPUTS:
+%model          ... A cell array containing models from all RBM's
+
+%varargin may contain options for the RBM's of this DBN, in row one by one
+%for example:
+%dbnFit(X, [500,400], opt1, opt2) uses opt1 for 500 and opt2 for 400
+%dbnFit(X, [500,400], opt1) uses opt1 only for 500, and defaults for 400
+
+numopts=length(varargin);
+H=length(numhid);
+model=cell(H,1);
+if H>=2
+    
+    %train the first RBM on data
+    if(numopts>=1)
+        model{1}= rbmBB(X, numhid(1),varargin{1});
+    else
+        model{1}= rbmBB(X, numhid(1));
+    end
+    
+    %train all other RBM's on top of each other
+    for i=2:H-1
+        if(numopts>=i)
+            model{i}=rbmBB(model{i-1}.top, numhid(i), varargin{i});
+        else
+            model{i}=rbmBB(model{i-1}.top, numhid(i));
+        end
+        
+    end
+    
+    %the last RBM has access to labels too
+    if(numopts>=H)
+        model{H}= rbmFit(model{H-1}.top, numhid(end), y, varargin{H});
+    else
+        model{H}= rbmFit(model{H-1}.top, numhid(end), y);
+    end
+else
+    
+    %numhid is only a single layer... but we should work anyway
+    if (numopts>=1)
+        model{1}= rbmFit(X, numhid(1), y, varargin{1});
+    else
+        model{1}= rbmFit(X, numhid(1), y);
+    end
+end    
+
+%% Training Process
+
+clear;
+clc;
+
+op.verbose=true;
+addpath('C:\Users\user\Dropbox\2014_현대건설\matlab_final\RBM');
+n = 1024;
+nbits = log2(n);
+
+load('normalize_500training.mat');
+load('normalize_500test.mat');
+
+normal = [NTRnormal; NTRea; NTReaValve; NTRValve; NTRHex;];
+fault = [ NTReaSF;  NTReaSFValve; NTRSF;];
+
+normal = repmat(normal,3,1);
+fault = repmat(fault,5,1);
+
+data = [normal; fault;];
+label = [ ones(size(normal,1), 1); 2 * ones(size(fault,1),1) ];
+
+test_normal = [NTEnormal;NTESF; NTEValve; NTEHex;];
+test_fault = [NTEea; NTEeaSF; NTEeaValve; NTEeaSFValve;];
+test_data = [test_normal;test_fault;];
+test_label = [ ones(size(test_normal,1), 1); 2 * ones(size(test_fault,1),1) ];
+
+clear NTRnormal NTRea NTReaSF NTReaValve NTReaSFValve NTRSF NTRValve NTRHex;
+clear NTEnormal NTEea NTEeaSF NTEeaValve NTEeaSFValve NTESF NTEValve NTEHex;
+
+bit_data = data2binary(data, nbits);
+
+
+permu1 = randperm( length(data) );
+perm_data = bit_data(permu1,:);
+perm_label = label(permu1,:);
+
+perm_test_data = data2binary(test_data, nbits);
+
+allresult = zeros(21,6);
+allerror = zeros(21,6);
+allmodel = [];
+
+for k = 1 : 1
+    nodes = 800;
+    models = dbnFit( perm_data,[ nodes , 2*nodes ], perm_label, op, op);
+    
+    % 2. Testing
+    % 2.1 training error
+    [ prediction_training, v1(:,:,k) ] = dbnPredict(models , perm_data);
+    
+    nTrainingErrorNormal = sum( prediction_training ~= perm_label & perm_label == 1);
+    nTrainingErrorFault = sum( prediction_training ~= perm_label & perm_label == 2);
+    nTrainingErrorTotal = sum( prediction_training ~= perm_label);
+    
+    if(nTrainingErrorNormal + nTrainingErrorFault ~= nTrainingErrorTotal)
+        warning('[Training]error : counting is wrong');
+    end
+    
+    ER_Training_Normal = nTrainingErrorNormal / size(normal,1);
+    ER_Training_Fault = nTrainingErrorFault / size(fault,1);
+    ER_Training = nTrainingErrorTotal / (size(normal,1) + size(fault,1));
+    
+    % 2.2 test error
+    [ prediction_test, v2(:,:,k) ] = dbnPredict(models, perm_test_data);
+    
+    nTestErrorNormal = sum( prediction_test ~= test_label & test_label == 1);
+    nTestErrorFault = sum( prediction_test ~= test_label & test_label == 2);
+    nTestErrorTotal = sum( prediction_test ~= test_label);
+    
+    if(nTestErrorNormal + nTestErrorFault ~= nTestErrorTotal)
+        warning('[Testing]error : counting is wrong');
+    end
+    
+    ER_Test_Normal = nTestErrorNormal / size(test_normal,1);
+    ER_Test_Fault = nTestErrorFault / size(test_fault,1);
+    ER_Test = nTestErrorTotal / (size(test_normal,1)+size(test_fault,1));
+    
+    result = [nTestErrorNormal, nTestErrorFault, nTestErrorTotal, nTrainingErrorNormal, nTrainingErrorFault, nTrainingErrorTotal];
+    error_rate = [ER_Test_Normal, ER_Test_Fault, ER_Test, ER_Training_Normal, ER_Training_Fault, ER_Training];
+    fprintf('lda component number -> k [%d]\n',k);
+    fprintf('training: normal err:%f, fault err: %f total err:%f\n',error_rate(4),error_rate(5),error_rate(6));
+    fprintf('test: normal err:%f, fault err: %f total err:%f\n',error_rate(1),error_rate(2),error_rate(3));
+    
+    allresult(k,:) = result;
+    allerror(k,:) = error_rate;
+    allmodel = [allmodel, models];
+end
+
+%% Results
+
+%Fault Valve detect code of DBN
+clear;
+clc;
+
+op.verbose=true;
+
+addpath('C:\Users\user\Dropbox\2014_현대건설\matlab_final\RBM');   
+n = 1024;
+nbits = log2(n);
+
+load('normalize_500training.mat');
+load('normalize_500test.mat');
+
+normal = [NTRnormal;];
+fault = [NTReaSFValve;NTRValve;];               % Data selection by Fault categories
+normal = repmat(normal,2,1);                    % Training data fits (normal,fault)
+data = [normal; fault;];
+label = [ones(size(normal,1), 1); 2 * ones(size(fault,1),1) ];
+
+test_normal = [NTEnormal;];
+test_fault =   [NTEeaSFValve;NTEValve;];
+test_data = [test_normal;test_fault;];
+test_label = [ ones(size(test_normal,1), 1); 2 * ones(size(test_fault,1),1) ];
+
+clear NTRnormal NTRea NTReaSF NTReaValve NTReaSFValve NTRSF NTRValve NTRHex;
+clear NTEnormal NTEea NTEeaSF NTEeaValve NTEea SFValve NTESF NTEValve NTEHex;
+
+% data to binary forms
+bit_data = data2binary(data, nbits);
+
+% data mix for training
+permu1 = randperm( length(data) );              
+perm_data = bit_data(permu1,:);
+perm_label = label(permu1,:);
+
+perm_test_data = data2binary(test_data, nbits);
+
+%DBN model training
+nodes = 800;
+models = dbnFit( perm_data,[ nodes , 2*nodes ], perm_label, op, op);    
+
+% 2. Testing
+% 2.1 training error
+%DBN results print of Training Data
+[ prediction_training, v1(:,:) ] = dbnPredict(models , perm_data);      
+
+nTrainingErrorNormal = sum( prediction_training ~= perm_label & perm_label == 1);
+nTrainingErrorFault = sum( prediction_training ~= perm_label & perm_label == 2);
+nTrainingErrorTotal = sum( prediction_training ~= perm_label);
+
+if(nTrainingErrorNormal + nTrainingErrorFault ~= nTrainingErrorTotal)
+    warning('[Training]error : counting is wrong');
+end
+%Training Error calculation
+ER_Training_Normal = nTrainingErrorNormal / size(normal,1);            
+ER_Training_Fault = nTrainingErrorFault / size(fault,1);
+ER_Training = nTrainingErrorTotal / (size(normal,1) + size(fault,1));
+
+% 2.2 test error
+%DBN results print of Test Data
+[ prediction_test, v2(:,:) ] = dbnPredict(models, perm_test_data);      
+
+nTestErrorNormal = sum( prediction_test ~= test_label & test_label == 1);
+nTestErrorFault = sum( prediction_test ~= test_label & test_label == 2);
+nTestErrorTotal = sum( prediction_test ~= test_label);
+
+if(nTestErrorNormal + nTestErrorFault ~= nTestErrorTotal)
+    warning('[Testing]error : counting is wrong');
+end
+%Test Error Caculation
+ER_Test_Normal = nTestErrorNormal / size(test_normal,1);                
+ER_Test_Fault = nTestErrorFault / size(test_fault,1);
+ER_Test = nTestErrorTotal / (size(test_normal,1)+size(test_fault,1));
+
+result = [nTestErrorNormal, nTestErrorFault, nTestErrorTotal, nTrainingErrorNormal, nTrainingErrorFault, nTrainingErrorTotal];
+error_rate = [ER_Test_Normal, ER_Test_Fault, ER_Test, ER_Training_Normal, ER_Training_Fault, ER_Training];
+
+fprintf('training: normal err:%f, fault err: %f total err:%f\n',error_rate(4),error_rate(5),error_rate(6));
+fprintf('test: normal err:%f, fault err: %f total err:%f\n',error_rate(1),error_rate(2),error_rate(3));
